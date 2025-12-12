@@ -1,0 +1,305 @@
+### ========================================
+### COACH BOOKING API TEST
+### ========================================
+
+### Variables
+@baseUrl = http://localhost:8080/api
+@customerToken = {{login.response.body.token}}
+@adminToken = {{adminLogin.response.body.token}}
+
+### ==========================================
+### 1. AUTHENTICATION
+### ==========================================
+
+### 1.1 Register new user
+POST {{baseUrl}}/auth/register
+Content-Type: application/json
+
+{
+  "fullName": "Nguyen Van A",
+  "email": "nguyenvana@gmail.com",
+  "phone": "0987654321",
+  "password": "123456"
+}
+
+### 1.2 Login as Customer
+# @name login
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "emailOrPhone": "test@example.com",
+  "password": "123456"
+}
+
+### 1.3 Login as Admin
+# @name adminLogin
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "emailOrPhone": "admin@coachbooking.com",
+  "password": "admin123"
+}
+
+### ==========================================
+### 2. USER PROFILE
+### ==========================================
+
+### 2.1 Get my profile
+GET {{baseUrl}}/users/me
+Authorization: Bearer {{customerToken}}
+
+### 2.2 Update profile
+PUT {{baseUrl}}/users/me
+Authorization: Bearer {{customerToken}}
+Content-Type: application/json
+
+{
+  "fullName": "Test User Updated",
+  "phone": "0111222333"
+}
+
+### 2.3 Change password
+PUT {{baseUrl}}/users/me
+Authorization: Bearer {{customerToken}}
+Content-Type: application/json
+
+{
+  "currentPassword": "123456",
+  "newPassword": "newpass123"
+}
+
+### ==========================================
+### 3. SEARCH TRIPS
+### ==========================================
+
+### 3.1 Search trips (basic)
+POST {{baseUrl}}/trips/search
+Content-Type: application/json
+
+{
+  "departure": "Hà Nội",
+  "destination": "Đà Nẵng",
+  "departureDate": "2024-12-15"
+}
+
+### 3.2 Search with VIP filter
+POST {{baseUrl}}/trips/search
+Content-Type: application/json
+
+{
+  "departure": "Hà Nội",
+  "destination": "Đà Nẵng",
+  "departureDate": "2024-12-15",
+  "coachType": "VIP"
+}
+
+### 3.3 Search with time filter (MORNING/AFTERNOON/EVENING)
+POST {{baseUrl}}/trips/search
+Content-Type: application/json
+
+{
+  "departure": "Hà Nội",
+  "destination": "Đà Nẵng",
+  "departureDate": "2024-12-15",
+  "timeOfDay": "MORNING"
+}
+
+### 3.4 Search with price filter and sort
+POST {{baseUrl}}/trips/search
+Content-Type: application/json
+
+{
+  "departure": "Hà Nội",
+  "destination": "Đà Nẵng",
+  "departureDate": "2024-12-15",
+  "minPrice": 300000,
+  "maxPrice": 600000,
+  "sortBy": "PRICE_ASC"
+}
+
+### 3.5 Get trip details
+GET {{baseUrl}}/trips/1
+
+### ==========================================
+### 4. ROUTES
+### ==========================================
+
+### 4.1 Get all routes
+GET {{baseUrl}}/routes
+
+### ==========================================
+### 5. SEATS
+### ==========================================
+
+### 5.1 Get all seats for a trip
+GET {{baseUrl}}/seats/trip/1
+Authorization: Bearer {{customerToken}}
+
+### 5.2 Get available seats only
+GET {{baseUrl}}/seats/trip/1/available
+Authorization: Bearer {{customerToken}}
+
+### ==========================================
+### 6. BOOKING
+### ==========================================
+
+### 6.1 Create booking (select seats 1, 2, 3)
+POST {{baseUrl}}/bookings
+Authorization: Bearer {{customerToken}}
+Content-Type: application/json
+
+{
+  "tripId": 1,
+  "seatIds": [1, 2, 3]
+}
+
+### 6.2 Get my bookings
+GET {{baseUrl}}/bookings
+Authorization: Bearer {{customerToken}}
+
+### 6.3 Get booking details
+GET {{baseUrl}}/bookings/1
+Authorization: Bearer {{customerToken}}
+
+### ==========================================
+### 7. PAYMENT
+### ==========================================
+
+### 7.1 Process payment (MOMO/VNPAY/BANK_TRANSFER/CASH)
+POST {{baseUrl}}/bookings/payment
+Authorization: Bearer {{customerToken}}
+Content-Type: application/json
+
+{
+  "bookingId": 1,
+  "paymentMethod": "MOMO"
+}
+
+### ==========================================
+### 8. CANCEL TICKET
+### ==========================================
+
+### 8.1 Cancel booking
+DELETE {{baseUrl}}/bookings/1
+Authorization: Bearer {{customerToken}}
+
+### ==========================================
+### 9. ADMIN - ROUTE MANAGEMENT
+### ==========================================
+
+### 9.1 Get all routes (Admin)
+GET {{baseUrl}}/admin/routes
+Authorization: Bearer {{adminToken}}
+
+### 9.2 Create new route
+POST {{baseUrl}}/admin/routes
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "departure": "Hà Nội",
+  "destination": "Hải Phòng",
+  "distance": 120.5,
+  "estimatedDuration": 150
+}
+
+### 9.3 Update route
+PUT {{baseUrl}}/admin/routes/4
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "departure": "Hà Nội",
+  "destination": "Hải Phòng",
+  "distance": 125.0,
+  "estimatedDuration": 140
+}
+
+### 9.4 Delete route
+DELETE {{baseUrl}}/admin/routes/4
+Authorization: Bearer {{adminToken}}
+
+### ==========================================
+### 10. ADMIN - COACH MANAGEMENT
+### ==========================================
+
+### 10.1 Get all coaches
+GET {{baseUrl}}/admin/coaches
+Authorization: Bearer {{adminToken}}
+
+### 10.2 Create new coach
+POST {{baseUrl}}/admin/coaches
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "licensePlate": "30A-99999",
+  "type": "VIP",
+  "totalSeats": 36,
+  "description": "Xe giường nằm cao cấp"
+}
+
+### 10.3 Update coach
+PUT {{baseUrl}}/admin/coaches/5
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "licensePlate": "30A-99999",
+  "type": "VIP",
+  "totalSeats": 40,
+  "description": "Xe giường nằm cao cấp - Updated"
+}
+
+### 10.4 Delete coach
+DELETE {{baseUrl}}/admin/coaches/5
+Authorization: Bearer {{adminToken}}
+
+### ==========================================
+### 11. ADMIN - TRIP MANAGEMENT
+### ==========================================
+
+### 11.1 Get all trips
+GET {{baseUrl}}/admin/trips
+Authorization: Bearer {{adminToken}}
+
+### 11.2 Create new trip
+POST {{baseUrl}}/admin/trips
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "routeId": 1,
+  "coachId": 1,
+  "departureTime": "2024-12-20T08:00:00",
+  "arrivalTime": "2024-12-20T20:00:00",
+  "price": 550000
+}
+
+### 11.3 Update trip
+PUT {{baseUrl}}/admin/trips/50
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "routeId": 1,
+  "coachId": 2,
+  "departureTime": "2024-12-20T09:00:00",
+  "arrivalTime": "2024-12-20T21:00:00",
+  "price": 600000
+}
+
+### 11.4 Update trip status
+PATCH {{baseUrl}}/admin/trips/1/status
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "status": "IN_PROGRESS"
+}
+
+### 11.5 Delete trip
+DELETE {{baseUrl}}/admin/trips/50
+Authorization: Bearer {{adminToken}}
