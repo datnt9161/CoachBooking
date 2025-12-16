@@ -2,6 +2,7 @@ package com.example.demo.service;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.stream.Collectors;
 
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -9,12 +10,15 @@ import org.springframework.transaction.annotation.Transactional;
 import com.example.demo.dto.admin.CoachRequest;
 import com.example.demo.dto.admin.RouteRequest;
 import com.example.demo.dto.admin.TripRequest;
+import com.example.demo.dto.booking.BookingResponse;
+import com.example.demo.entity.Booking;
 import com.example.demo.entity.Coach;
 import com.example.demo.entity.Route;
 import com.example.demo.entity.Seat;
 import com.example.demo.entity.Trip;
 import com.example.demo.exception.BadRequestException;
 import com.example.demo.exception.ResourceNotFoundException;
+import com.example.demo.repository.BookingRepository;
 import com.example.demo.repository.CoachRepository;
 import com.example.demo.repository.RouteRepository;
 import com.example.demo.repository.SeatRepository;
@@ -27,13 +31,70 @@ public class AdminService {
     private final CoachRepository coachRepository;
     private final TripRepository tripRepository;
     private final SeatRepository seatRepository;
+    private final BookingRepository bookingRepository;
 
     public AdminService(RouteRepository routeRepository, CoachRepository coachRepository,
-                        TripRepository tripRepository, SeatRepository seatRepository) {
+                        TripRepository tripRepository, SeatRepository seatRepository,
+                        BookingRepository bookingRepository) {
         this.routeRepository = routeRepository;
         this.coachRepository = coachRepository;
         this.tripRepository = tripRepository;
         this.seatRepository = seatRepository;
+        this.bookingRepository = bookingRepository;
+    }
+
+    // ==================== BOOKING MANAGEMENT ====================
+    @Transactional(readOnly = true)
+    public List<BookingResponse> getAllBookings() {
+        return bookingRepository.findAll().stream()
+                .map(this::toBookingResponse)
+                .collect(Collectors.toList());
+    }
+
+    @Transactional(readOnly = true)
+    public BookingResponse getBookingByCode(String bookingCode) {
+        Booking booking = bookingRepository.findByBookingCode(bookingCode.toUpperCase())
+                .orElseThrow(() -> new ResourceNotFoundException("Không tìm thấy vé với mã: " + bookingCode));
+        return toBookingResponse(booking);
+    }
+
+    @Transactional
+    public BookingResponse updateBookingStatus(Long id, String status) {
+        Booking booking = bookingRepository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("Booking not found"));
+        
+        Booking.BookingStatus newStatus = Booking.BookingStatus.valueOf(status.toUpperCase());
+        booking.setStatus(newStatus);
+        
+        // If confirmed, update seat status to BOOKED
+        if (newStatus == Booking.BookingStatus.CONFIRMED) {
+            booking.getSeats().forEach(seat -> seat.setStatus(Seat.SeatStatus.BOOKED));
+        }
+        // If cancelled, release seats
+        if (newStatus == Booking.BookingStatus.CANCELLED) {
+            booking.getSeats().forEach(seat -> seat.setStatus(Seat.SeatStatus.AVAILABLE));
+        }
+        
+        return toBookingResponse(bookingRepository.save(booking));
+    }
+
+    private BookingResponse toBookingResponse(Booking booking) {
+        Trip trip = booking.getTrip();
+        return BookingResponse.builder()
+                .id(booking.getId())
+                .bookingCode(booking.getBookingCode())
+                .departure(trip.getRoute().getDeparture())
+                .destination(trip.getRoute().getDestination())
+                .departureTime(trip.getDepartureTime())
+                .coachType(trip.getCoach().getType().name())
+                .licensePlate(trip.getCoach().getLicensePlate())
+                .seatNumbers(booking.getSeats().stream().map(Seat::getSeatNumber).collect(Collectors.toList()))
+                .totalPrice(booking.getTotalPrice())
+                .status(booking.getStatus().name())
+                .passengerName(booking.getUser().getFullName())
+                .passengerPhone(booking.getUser().getPhone())
+                .createdAt(booking.getCreatedAt())
+                .build();
     }
 
     // ==================== ROUTE MANAGEMENT ====================
@@ -177,13 +238,26 @@ public class AdminService {
 
     private void createSeatsForTrip(Trip trip, int totalSeats) {
         List<Seat> seats = new ArrayList<>();
-        for (int i = 1; i <= totalSeats; i++) {
+        
+        // Xe giường nằm 41 giường: Tầng 1 (A1-A18), Tầng 2 (B1-B23)
+        // Tầng 1: 18 ghế
+        for (int i = 1; i <= 18; i++) {
             seats.add(Seat.builder()
                     .trip(trip)
-                    .seatNumber(String.format("A%02d", i))
+                    .seatNumber("A" + i)
                     .status(Seat.SeatStatus.AVAILABLE)
                     .build());
         }
+        
+        // Tầng 2: 23 ghế
+        for (int i = 1; i <= 23; i++) {
+            seats.add(Seat.builder()
+                    .trip(trip)
+                    .seatNumber("B" + i)
+                    .status(Seat.SeatStatus.AVAILABLE)
+                    .build());
+        }
+        
         seatRepository.saveAll(seats);
     }
 }

@@ -52,4 +52,12 @@ public class BookingController {
             @PathVariable Long id) {
         return ResponseEntity.ok(bookingService.cancelBooking(user.getId(), id));
     }
+
+    @GetMapping("/{id}/payment-qr")
+    public ResponseEntity<com.example.demo.dto.booking.PaymentQRResponse> getPaymentQR(
+            @AuthenticationPrincipal CustomUserDetails user,
+            @PathVariable Long id,
+            @RequestParam String paymentMethod) {
+        return ResponseEntity.ok(bookingService.getPaymentQR(user.getId(), id, paymentMethod));
+    }
 }

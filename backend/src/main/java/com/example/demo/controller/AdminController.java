@@ -18,6 +18,7 @@ import org.springframework.web.bind.annotation.RestController;
 import com.example.demo.dto.admin.CoachRequest;
 import com.example.demo.dto.admin.RouteRequest;
 import com.example.demo.dto.admin.TripRequest;
+import com.example.demo.dto.booking.BookingResponse;
 import com.example.demo.entity.Coach;
 import com.example.demo.entity.Route;
 import com.example.demo.entity.Trip;
@@ -34,6 +35,22 @@ public class AdminController {
 
     public AdminController(AdminService adminService) {
         this.adminService = adminService;
+    }
+
+    // ==================== BOOKING MANAGEMENT ====================
+    @GetMapping("/bookings")
+    public ResponseEntity<List<BookingResponse>> getAllBookings() {
+        return ResponseEntity.ok(adminService.getAllBookings());
+    }
+
+    @GetMapping("/bookings/search/{bookingCode}")
+    public ResponseEntity<BookingResponse> getBookingByCode(@PathVariable String bookingCode) {
+        return ResponseEntity.ok(adminService.getBookingByCode(bookingCode));
+    }
+
+    @PatchMapping("/bookings/{id}/status")
+    public ResponseEntity<BookingResponse> updateBookingStatus(@PathVariable Long id, @RequestBody Map<String, String> body) {
+        return ResponseEntity.ok(adminService.updateBookingStatus(id, body.get("status")));
     }
 
     // ==================== ROUTE MANAGEMENT ====================

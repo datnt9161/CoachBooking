@@ -1,17 +1,30 @@
 package com.example.demo.service;
 
-import com.example.demo.dto.booking.*;
-import com.example.demo.dto.seat.SeatResponse;
-import com.example.demo.entity.*;
-import com.example.demo.exception.*;
-import com.example.demo.repository.*;
-import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.UUID;
 import java.util.stream.Collectors;
+
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import com.example.demo.config.PaymentConfig;
+import com.example.demo.dto.booking.BookingRequest;
+import com.example.demo.dto.booking.BookingResponse;
+import com.example.demo.dto.booking.PaymentQRResponse;
+import com.example.demo.dto.booking.PaymentRequest;
+import com.example.demo.dto.seat.SeatResponse;
+import com.example.demo.entity.Booking;
+import com.example.demo.entity.Seat;
+import com.example.demo.entity.Trip;
+import com.example.demo.entity.User;
+import com.example.demo.exception.BadRequestException;
+import com.example.demo.exception.ResourceNotFoundException;
+import com.example.demo.repository.BookingRepository;
+import com.example.demo.repository.SeatRepository;
+import com.example.demo.repository.TripRepository;
+import com.example.demo.repository.UserRepository;
 
 @Service
 public class BookingService {
@@ -20,13 +33,16 @@ public class BookingService {
     private final TripRepository tripRepository;
     private final SeatRepository seatRepository;
     private final UserRepository userRepository;
+    private final PaymentConfig paymentConfig;
 
     public BookingService(BookingRepository bookingRepository, TripRepository tripRepository,
-                          SeatRepository seatRepository, UserRepository userRepository) {
+                          SeatRepository seatRepository, UserRepository userRepository,
+                          PaymentConfig paymentConfig) {
         this.bookingRepository = bookingRepository;
         this.tripRepository = tripRepository;
         this.seatRepository = seatRepository;
         this.userRepository = userRepository;
+        this.paymentConfig = paymentConfig;
     }
 
     @Transactional
@@ -92,7 +108,8 @@ public class BookingService {
         }
 
         booking.setPaymentMethod(Booking.PaymentMethod.valueOf(request.getPaymentMethod().toUpperCase()));
-        booking.setStatus(Booking.BookingStatus.CONFIRMED);
+        // Set to PAID status - waiting for admin confirmation
+        booking.setStatus(Booking.BookingStatus.PAID);
         booking.setPaidAt(LocalDateTime.now());
 
         bookingRepository.save(booking);
@@ -144,6 +161,50 @@ public class BookingService {
         }
 
         return toBookingResponse(booking);
+    }
+
+    @Transactional(readOnly = true)
+    public PaymentQRResponse getPaymentQR(Long userId, Long bookingId, String paymentMethod) {
+        Booking booking = bookingRepository.findByIdWithDetails(bookingId)
+                .orElseThrow(() -> new ResourceNotFoundException("Booking not found"));
+
+        if (!booking.getUser().getId().equals(userId)) {
+            throw new BadRequestException("Unauthorized access to booking");
+        }
+
+        if (booking.getStatus() != Booking.BookingStatus.PENDING) {
+            throw new BadRequestException("Booking is not in pending status");
+        }
+
+        PaymentConfig.QRConfig qrConfig;
+        String method = paymentMethod.toUpperCase();
+
+        switch (method) {
+            case "MOMO":
+                qrConfig = paymentConfig.getMomo();
+                break;
+            case "BANK_TRANSFER":
+                qrConfig = paymentConfig.getBank();
+                break;
+            case "VNPAY":
+                qrConfig = paymentConfig.getVnpay();
+                break;
+            default:
+                throw new BadRequestException("Invalid payment method for QR: " + paymentMethod);
+        }
+
+        String transferContent = "COACHBOOKING " + booking.getBookingCode();
+
+        return PaymentQRResponse.builder()
+                .bookingCode(booking.getBookingCode())
+                .paymentMethod(method)
+                .qrCodeUrl(qrConfig.getQrCodeUrl())
+                .accountName(qrConfig.getAccountName())
+                .accountNumber(qrConfig.getAccountNumber())
+                .bankName(qrConfig.getBankName())
+                .transferContent(transferContent)
+                .amount(booking.getTotalPrice())
+                .build();
     }
 
     private String generateBookingCode() {
