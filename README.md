@@ -383,12 +383,5 @@ Content-Type: application/json
 
 MIT License - Xem file [LICENSE](LICENSE) để biết thêm chi tiết.
 
-## 👨‍💻 Tác giả
-
-**[Tên của bạn]**
-- GitHub: [@your-username](https://github.com/your-username)
-- Email: your-email@example.com
-
----
 
 ⭐ Nếu dự án hữu ích, hãy cho một star nhé!
