@@ -753,6 +753,91 @@ coach-booking/
 - Tạo và xác thực JWT token
 - Phân quyền CUSTOMER/ADMIN
 
+**Kiến trúc Security:**
+
+```java
+// 1. CustomUserDetails - Wrapper cho User entity
+@Component
+public class CustomUserDetails implements UserDetails {
+    private final Long id;
+    private final String email;
+    private final String password;
+    private final String role;
+    private final Collection<? extends GrantedAuthority> authorities;
+
+    public CustomUserDetails(User user) {
+        this.id = user.getId();
+        this.email = user.getEmail();
+        this.password = user.getPassword();
+        this.role = user.getRole().name();
+        this.authorities = Collections.singletonList(
+            new SimpleGrantedAuthority("ROLE_" + user.getRole().name()));
+    }
+    // Implement UserDetails methods...
+}
+
+// 2. CustomUserDetailsService - Load user từ database
+@Service
+public class CustomUserDetailsService implements UserDetailsService {
+    @Override
+    public UserDetails loadUserByUsername(String emailOrPhone) {
+        User user = userRepository.findByEmailOrPhone(emailOrPhone, emailOrPhone)
+                .orElseThrow(() -> new UsernameNotFoundException("User not found"));
+        return new CustomUserDetails(user);
+    }
+}
+
+// 3. JwtTokenProvider - Tạo và validate JWT
+@Component
+public class JwtTokenProvider {
+    public String generateToken(Authentication authentication) {
+        CustomUserDetails userDetails = (CustomUserDetails) authentication.getPrincipal();
+        Date expiryDate = new Date(System.currentTimeMillis() + jwtExpiration);
+        
+        return Jwts.builder()
+                .subject(userDetails.getUsername())
+                .claim("userId", userDetails.getId())
+                .claim("role", userDetails.getRole())
+                .issuedAt(new Date())
+                .expiration(expiryDate)
+                .signWith(getSigningKey())
+                .compact();
+    }
+    
+    public boolean validateToken(String token) {
+        try {
+            Jwts.parser().verifyWith(getSigningKey()).build().parseSignedClaims(token);
+            return true;
+        } catch (JwtException | IllegalArgumentException e) {
+            return false;
+        }
+    }
+}
+
+// 4. JwtAuthenticationFilter - Filter xử lý JWT
+@Component
+public class JwtAuthenticationFilter extends OncePerRequestFilter {
+    @Override
+    protected void doFilterInternal(HttpServletRequest request, 
+                                  HttpServletResponse response, 
+                                  FilterChain filterChain) {
+        String token = getTokenFromRequest(request);
+        
+        if (token != null && tokenProvider.validateToken(token)) {
+            String username = tokenProvider.getUsernameFromToken(token);
+            UserDetails userDetails = userDetailsService.loadUserByUsername(username);
+            
+            UsernamePasswordAuthenticationToken authentication = 
+                new UsernamePasswordAuthenticationToken(userDetails, null, 
+                                                      userDetails.getAuthorities());
+            SecurityContextHolder.getContext().setAuthentication(authentication);
+        }
+        
+        filterChain.doFilter(request, response);
+    }
+}
+```
+
 **Code minh họa - AuthService.java:**
 ```java
 @Service
@@ -794,6 +879,42 @@ public class AuthService {
 - Hủy vé
 - Xem lịch sử đặt vé
 
+**Kiến trúc Data Access Layer:**
+
+```java
+// Repository với Pessimistic Locking để tránh double booking
+@Repository
+public interface SeatRepository extends JpaRepository<Seat, Long> {
+    
+    // Locking ghế khi đặt vé để tránh race condition
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("SELECT s FROM Seat s WHERE s.id IN :seatIds")
+    List<Seat> findByIdInWithLock(@Param("seatIds") List<Long> seatIds);
+    
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("SELECT s FROM Seat s WHERE s.id = :id")
+    Optional<Seat> findByIdWithLock(@Param("id") Long id);
+    
+    @Query("SELECT COUNT(s) FROM Seat s WHERE s.trip.id = :tripId AND s.status = 'AVAILABLE'")
+    int countAvailableSeats(@Param("tripId") Long tripId);
+}
+
+// Repository với JOIN FETCH để tối ưu performance
+@Repository
+public interface BookingRepository extends JpaRepository<Booking, Long> {
+    
+    @Query("SELECT b FROM Booking b JOIN FETCH b.trip t JOIN FETCH t.route JOIN FETCH t.coach " +
+           "JOIN FETCH b.seats WHERE b.user.id = :userId ORDER BY b.createdAt DESC")
+    List<Booking> findByUserIdWithDetails(@Param("userId") Long userId);
+    
+    @Query("SELECT b FROM Booking b JOIN FETCH b.trip t JOIN FETCH t.route JOIN FETCH t.coach " +
+           "JOIN FETCH b.seats WHERE b.id = :id")
+    Optional<Booking> findByIdWithDetails(@Param("id") Long id);
+    
+    Optional<Booking> findByBookingCode(String bookingCode);
+}
+```
+
 **Code minh họa - BookingService.java:**
 ```java
 @Service
@@ -832,6 +953,11 @@ public class BookingService {
         
         return toBookingResponse(bookingRepository.save(booking));
     }
+    
+    private String generateBookingCode() {
+        return "CB" + System.currentTimeMillis() + 
+               String.format("%04d", new Random().nextInt(10000));
+    }
 }
 ```
 
@@ -841,6 +967,40 @@ public class BookingService {
 - Tìm kiếm theo tuyến đường
 - Lọc theo ngày, loại xe
 - Sắp xếp theo giá, thời gian
+
+**DTO Pattern cho Search Request:**
+
+```java
+// TripSearchRequest - DTO với validation
+public class TripSearchRequest {
+    @NotBlank(message = "Departure is required")
+    private String departure;
+
+    @NotBlank(message = "Destination is required")
+    private String destination;
+
+    @NotNull(message = "Departure date is required")
+    private LocalDate departureDate;
+
+    // Advanced filters
+    private String coachType;        // VIP, STANDARD
+    private String timeOfDay;        // MORNING, AFTERNOON, EVENING
+    private String sortBy;           // PRICE_ASC, PRICE_DESC, TIME_ASC
+    private BigDecimal minPrice;
+    private BigDecimal maxPrice;
+    
+    // Getters and setters...
+}
+
+// RouteRepository với tìm kiếm linh hoạt
+@Repository
+public interface RouteRepository extends JpaRepository<Route, Long> {
+    Optional<Route> findByDepartureAndDestination(String departure, String destination);
+    
+    List<Route> findByDepartureContainingIgnoreCaseOrDestinationContainingIgnoreCase(
+        String departure, String destination);
+}
+```
 
 **Code minh họa - TripService.java:**
 ```java
@@ -865,9 +1025,37 @@ public class TripService {
                     startOfDay, endOfDay);
         }
         
+        // Apply additional filters
+        if (request.getMinPrice() != null || request.getMaxPrice() != null) {
+            trips = trips.stream()
+                    .filter(trip -> filterByPrice(trip, request.getMinPrice(), request.getMaxPrice()))
+                    .collect(Collectors.toList());
+        }
+        
+        // Apply sorting
+        if (request.getSortBy() != null) {
+            trips = applySorting(trips, request.getSortBy());
+        }
+        
         return trips.stream()
                 .map(this::toTripResponse)
                 .collect(Collectors.toList());
+    }
+    
+    private List<Trip> applySorting(List<Trip> trips, String sortBy) {
+        switch (sortBy) {
+            case "PRICE_ASC":
+                return trips.stream().sorted(Comparator.comparing(Trip::getPrice))
+                           .collect(Collectors.toList());
+            case "PRICE_DESC":
+                return trips.stream().sorted(Comparator.comparing(Trip::getPrice).reversed())
+                           .collect(Collectors.toList());
+            case "TIME_ASC":
+                return trips.stream().sorted(Comparator.comparing(Trip::getDepartureTime))
+                           .collect(Collectors.toList());
+            default:
+                return trips;
+        }
     }
 }
 ```
@@ -878,6 +1066,52 @@ public class TripService {
 - CRUD tuyến đường, xe, chuyến
 - Quản lý đơn đặt vé
 - Xác nhận/hủy đơn
+
+**Admin DTOs với Validation:**
+
+```java
+// CoachRequest - DTO cho tạo xe mới
+public class CoachRequest {
+    @NotBlank(message = "License plate is required")
+    private String licensePlate;
+
+    @NotBlank(message = "Coach type is required")
+    private String type; // VIP, STANDARD
+
+    @NotNull(message = "Total seats is required")
+    @Positive(message = "Total seats must be positive")
+    private Integer totalSeats;
+
+    private String description;
+    // Getters and setters...
+}
+
+// TripRequest - DTO cho tạo chuyến mới
+public class TripRequest {
+    @NotNull(message = "Route ID is required")
+    private Long routeId;
+
+    @NotNull(message = "Coach ID is required")
+    private Long coachId;
+
+    @NotNull(message = "Departure time is required")
+    private LocalDateTime departureTime;
+
+    private LocalDateTime arrivalTime;
+
+    @NotNull(message = "Price is required")
+    @Positive(message = "Price must be positive")
+    private BigDecimal price;
+    // Getters and setters...
+}
+
+// Repository với tìm kiếm theo biển số
+@Repository
+public interface CoachRepository extends JpaRepository<Coach, Long> {
+    Optional<Coach> findByLicensePlate(String licensePlate);
+    List<Coach> findByType(Coach.CoachType type);
+}
+```
 
 **Code minh họa - AdminService.java:**
 ```java
@@ -902,14 +1136,217 @@ public class AdminService {
         
         return toBookingResponse(bookingRepository.save(booking));
     }
+    
+    @Transactional
+    public TripResponse createTrip(TripRequest request) {
+        // Validate route và coach
+        Route route = routeRepository.findById(request.getRouteId())
+                .orElseThrow(() -> new ResourceNotFoundException("Route not found"));
+        Coach coach = coachRepository.findById(request.getCoachId())
+                .orElseThrow(() -> new ResourceNotFoundException("Coach not found"));
+        
+        // Tạo trip mới
+        Trip trip = Trip.builder()
+                .route(route)
+                .coach(coach)
+                .departureTime(request.getDepartureTime())
+                .arrivalTime(request.getArrivalTime())
+                .price(request.getPrice())
+                .status(Trip.TripStatus.SCHEDULED)
+                .build();
+        
+        Trip savedTrip = tripRepository.save(trip);
+        
+        // Tự động tạo 41 ghế cho xe giường nằm
+        createSeatsForTrip(savedTrip);
+        
+        return toTripResponse(savedTrip);
+    }
+    
+    private void createSeatsForTrip(Trip trip) {
+        List<Seat> seats = new ArrayList<>();
+        
+        // Tầng 1: A1-A18 (18 ghế)
+        for (int i = 1; i <= 18; i++) {
+            seats.add(Seat.builder()
+                    .trip(trip)
+                    .seatNumber("A" + i)
+                    .status(Seat.SeatStatus.AVAILABLE)
+                    .build());
+        }
+        
+        // Tầng 2: B1-B23 (23 ghế)
+        for (int i = 1; i <= 23; i++) {
+            seats.add(Seat.builder()
+                    .trip(trip)
+                    .seatNumber("B" + i)
+                    .status(Seat.SeatStatus.AVAILABLE)
+                    .build());
+        }
+        
+        seatRepository.saveAll(seats);
+    }
 }
+```
+
+#### 4.2.5. Module Exception Handling (Xử lý lỗi)
+
+**Chức năng:**
+- Xử lý lỗi tập trung với GlobalExceptionHandler
+- Custom exceptions cho các trường hợp cụ thể
+- Response lỗi nhất quán cho API
+
+**Custom Exception Classes:**
+
+```java
+// BadRequestException - Lỗi do input không hợp lệ
+public class BadRequestException extends RuntimeException {
+    public BadRequestException(String message) {
+        super(message);
+    }
+}
+
+// ResourceNotFoundException - Lỗi không tìm thấy resource
+public class ResourceNotFoundException extends RuntimeException {
+    public ResourceNotFoundException(String message) {
+        super(message);
+    }
+}
+```
+
+**Global Exception Handler:**
+
+```java
+@RestControllerAdvice
+public class GlobalExceptionHandler {
+
+    @ExceptionHandler(ResourceNotFoundException.class)
+    public ResponseEntity<ErrorResponse> handleResourceNotFound(ResourceNotFoundException ex) {
+        ErrorResponse error = ErrorResponse.builder()
+                .timestamp(LocalDateTime.now())
+                .status(HttpStatus.NOT_FOUND.value())
+                .error("Not Found")
+                .message(ex.getMessage())
+                .build();
+        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(error);
+    }
+
+    @ExceptionHandler(BadRequestException.class)
+    public ResponseEntity<ErrorResponse> handleBadRequest(BadRequestException ex) {
+        ErrorResponse error = ErrorResponse.builder()
+                .timestamp(LocalDateTime.now())
+                .status(HttpStatus.BAD_REQUEST.value())
+                .error("Bad Request")
+                .message(ex.getMessage())
+                .build();
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(error);
+    }
+
+    @ExceptionHandler(MethodArgumentNotValidException.class)
+    public ResponseEntity<ErrorResponse> handleValidationErrors(MethodArgumentNotValidException ex) {
+        List<String> errors = ex.getBindingResult()
+                .getFieldErrors()
+                .stream()
+                .map(FieldError::getDefaultMessage)
+                .collect(Collectors.toList());
+        
+        ErrorResponse error = ErrorResponse.builder()
+                .timestamp(LocalDateTime.now())
+                .status(HttpStatus.BAD_REQUEST.value())
+                .error("Validation Failed")
+                .message("Invalid input data")
+                .details(errors)
+                .build();
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(error);
+    }
+
+    @ExceptionHandler(AccessDeniedException.class)
+    public ResponseEntity<ErrorResponse> handleAccessDenied(AccessDeniedException ex) {
+        ErrorResponse error = ErrorResponse.builder()
+                .timestamp(LocalDateTime.now())
+                .status(HttpStatus.FORBIDDEN.value())
+                .error("Access Denied")
+                .message("You don't have permission to access this resource")
+                .build();
+        return ResponseEntity.status(HttpStatus.FORBIDDEN).body(error);
+    }
+}
+```
+
+#### 4.2.6. Module Frontend API Integration
+
+**Chức năng:**
+- Axios client configuration
+- JWT token management
+- Automatic token refresh
+- Error handling
+
+**Frontend API Configuration:**
+
+```typescript
+// frontend/src/api/axios.ts - Customer API client
+import axios from 'axios';
+
+const api = axios.create({
+  baseURL: 'http://localhost:8081/api',
+  headers: { 'Content-Type': 'application/json' }
+});
+
+// Request interceptor - Tự động thêm JWT token
+api.interceptors.request.use((config) => {
+  const token = localStorage.getItem('token');
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
+});
+
+// Response interceptor - Xử lý lỗi 401 (Unauthorized)
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error.response?.status === 401) {
+      // Token hết hạn, redirect về login
+      localStorage.removeItem('token');
+      localStorage.removeItem('user');
+      window.location.href = '/login';
+    }
+    return Promise.reject(error);
+  }
+);
+
+export default api;
+
+// dashboard/src/api/axios.ts - Admin API client
+const adminApi = axios.create({
+  baseURL: 'http://localhost:8081/api',
+  headers: { 'Content-Type': 'application/json' }
+});
+
+adminApi.interceptors.request.use((config) => {
+  const token = localStorage.getItem('admin_token');
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
+});
+
+adminApi.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error.response?.status === 401 || error.response?.status === 403) {
+      localStorage.removeItem('admin_token');
+      localStorage.removeItem('admin_user');
+      window.location.href = '/login';
+    }
+    return Promise.reject(error);
+  }
+);
 ```
 
 ### 4.3. Screenshot / Mô tả màn hình
 
 #### 4.3.1. Frontend - Giao diện khách hàng
-
-**Trang chủ (Home.tsx):**
 - Hero section với form tìm kiếm chuyến xe
 - Chọn điểm đi, điểm đến, ngày đi, loại xe
 - Hiển thị các tuyến phổ biến
@@ -969,10 +1406,348 @@ public class AdminService {
 - Thống kê số đơn theo trạng thái
 - Xác nhận/hủy đơn
 
-### 4.4. Kết nối giữa Design → Code
+### 4.5. Phân tích kỹ thuật chi tiết
 
-#### 4.4.1. Mapping từ Use Case đến Code
+#### 4.5.1. Kiến trúc Database và Entity Relationships
 
+**Database Schema Analysis:**
+
+Hệ thống sử dụng 6 bảng chính với các mối quan hệ phức tạp:
+
+```sql
+-- Bảng users (Người dùng)
+CREATE TABLE users (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    full_name VARCHAR(255) NOT NULL,
+    email VARCHAR(255) UNIQUE NOT NULL,
+    phone VARCHAR(20) UNIQUE NOT NULL,
+    password VARCHAR(255) NOT NULL,
+    role ENUM('CUSTOMER', 'ADMIN') NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Bảng routes (Tuyến đường)
+CREATE TABLE routes (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    departure VARCHAR(255) NOT NULL,
+    destination VARCHAR(255) NOT NULL,
+    distance DOUBLE,
+    estimated_duration INT -- minutes
+);
+
+-- Bảng coaches (Xe khách)
+CREATE TABLE coaches (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    license_plate VARCHAR(20) UNIQUE NOT NULL,
+    type ENUM('VIP', 'STANDARD') NOT NULL,
+    total_seats INT NOT NULL,
+    description TEXT
+);
+
+-- Bảng trips (Chuyến xe)
+CREATE TABLE trips (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    route_id BIGINT NOT NULL,
+    coach_id BIGINT NOT NULL,
+    departure_time DATETIME NOT NULL,
+    arrival_time DATETIME,
+    price DECIMAL(10,2) NOT NULL,
+    status ENUM('SCHEDULED', 'IN_PROGRESS', 'COMPLETED', 'CANCELLED'),
+    FOREIGN KEY (route_id) REFERENCES routes(id),
+    FOREIGN KEY (coach_id) REFERENCES coaches(id)
+);
+
+-- Bảng seats (Ghế ngồi)
+CREATE TABLE seats (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    trip_id BIGINT NOT NULL,
+    seat_number VARCHAR(10) NOT NULL,
+    status ENUM('AVAILABLE', 'SELECTED', 'BOOKED'),
+    version BIGINT DEFAULT 0, -- Optimistic locking
+    FOREIGN KEY (trip_id) REFERENCES trips(id)
+);
+
+-- Bảng bookings (Đặt vé)
+CREATE TABLE bookings (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    booking_code VARCHAR(50) UNIQUE NOT NULL,
+    user_id BIGINT NOT NULL,
+    trip_id BIGINT NOT NULL,
+    total_price DECIMAL(10,2) NOT NULL,
+    status ENUM('PENDING', 'PAID', 'CONFIRMED', 'CANCELLED'),
+    payment_method ENUM('CASH', 'BANK_TRANSFER', 'MOMO', 'VNPAY'),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    paid_at TIMESTAMP NULL,
+    cancelled_at TIMESTAMP NULL,
+    FOREIGN KEY (user_id) REFERENCES users(id),
+    FOREIGN KEY (trip_id) REFERENCES trips(id)
+);
+
+-- Bảng booking_seats (Many-to-many relationship)
+CREATE TABLE booking_seats (
+    booking_id BIGINT NOT NULL,
+    seat_id BIGINT NOT NULL,
+    PRIMARY KEY (booking_id, seat_id),
+    FOREIGN KEY (booking_id) REFERENCES bookings(id),
+    FOREIGN KEY (seat_id) REFERENCES seats(id)
+);
+```
+
+#### 4.5.2. Performance Optimization Techniques
+
+**1. JPA Query Optimization:**
+
+```java
+// Sử dụng JOIN FETCH để tránh N+1 problem
+@Query("SELECT b FROM Booking b " +
+       "JOIN FETCH b.trip t " +
+       "JOIN FETCH t.route " +
+       "JOIN FETCH t.coach " +
+       "JOIN FETCH b.seats " +
+       "WHERE b.user.id = :userId " +
+       "ORDER BY b.createdAt DESC")
+List<Booking> findByUserIdWithDetails(@Param("userId") Long userId);
+
+// Projection để chỉ lấy dữ liệu cần thiết
+@Query("SELECT new com.example.demo.dto.TripSummary(t.id, t.departureTime, t.price, " +
+       "r.departure, r.destination, c.type) " +
+       "FROM Trip t JOIN t.route r JOIN t.coach c " +
+       "WHERE r.departure = :departure AND r.destination = :destination")
+List<TripSummary> findTripSummaries(@Param("departure") String departure, 
+                                   @Param("destination") String destination);
+```
+
+**2. Database Indexing Strategy:**
+
+```sql
+-- Index cho tìm kiếm chuyến xe
+CREATE INDEX idx_trips_route_time ON trips(route_id, departure_time);
+CREATE INDEX idx_trips_departure_time ON trips(departure_time);
+
+-- Index cho tìm kiếm user
+CREATE INDEX idx_users_email ON users(email);
+CREATE INDEX idx_users_phone ON users(phone);
+
+-- Index cho booking code lookup
+CREATE INDEX idx_bookings_code ON bookings(booking_code);
+
+-- Composite index cho seat lookup
+CREATE INDEX idx_seats_trip_status ON seats(trip_id, status);
+```
+
+**3. Concurrency Control:**
+
+```java
+// Pessimistic Locking cho seat booking
+@Lock(LockModeType.PESSIMISTIC_WRITE)
+@Query("SELECT s FROM Seat s WHERE s.id IN :seatIds")
+List<Seat> findByIdInWithLock(@Param("seatIds") List<Long> seatIds);
+
+// Optimistic Locking với @Version
+@Entity
+public class Seat {
+    @Version
+    private Long version;
+    // Tự động handle concurrent updates
+}
+```
+
+#### 4.5.3. Security Implementation Analysis
+
+**1. JWT Token Structure:**
+
+```json
+{
+  "header": {
+    "alg": "HS256",
+    "typ": "JWT"
+  },
+  "payload": {
+    "sub": "user@example.com",
+    "userId": 123,
+    "role": "CUSTOMER",
+    "iat": 1640995200,
+    "exp": 1641081600
+  },
+  "signature": "HMACSHA256(base64UrlEncode(header) + '.' + base64UrlEncode(payload), secret)"
+}
+```
+
+**2. Password Security:**
+
+```java
+// BCrypt với cost factor 12 (2^12 = 4096 rounds)
+@Bean
+public PasswordEncoder passwordEncoder() {
+    return new BCryptPasswordEncoder(12);
+}
+
+// Validation pattern cho password mạnh
+@Pattern(regexp = "^(?=.*[a-z])(?=.*[A-Z])(?=.*\\d)(?=.*[@$!%*?&])[A-Za-z\\d@$!%*?&]{8,}$",
+         message = "Password must contain at least 8 characters, 1 uppercase, 1 lowercase, 1 number and 1 special character")
+private String password;
+```
+
+**3. CORS Configuration:**
+
+```java
+@Configuration
+public class CorsConfig implements WebMvcConfigurer {
+    @Override
+    public void addCorsMappings(CorsRegistry registry) {
+        registry.addMapping("/api/**")
+                .allowedOrigins("http://localhost:5173", "http://localhost:5174")
+                .allowedMethods("GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS")
+                .allowedHeaders("*")
+                .allowCredentials(true)
+                .maxAge(3600);
+    }
+}
+```
+
+#### 4.5.4. API Design Patterns
+
+**1. RESTful API Design:**
+
+```java
+// Resource-based URLs với HTTP methods
+@RestController
+@RequestMapping("/api/bookings")
+public class BookingController {
+    
+    @GetMapping                          // GET /api/bookings
+    public List<BookingResponse> getMyBookings();
+    
+    @PostMapping                         // POST /api/bookings
+    public BookingResponse createBooking(@RequestBody BookingRequest request);
+    
+    @GetMapping("/{id}")                 // GET /api/bookings/{id}
+    public BookingResponse getBooking(@PathVariable Long id);
+    
+    @PatchMapping("/{id}/status")        // PATCH /api/bookings/{id}/status
+    public BookingResponse updateStatus(@PathVariable Long id, @RequestBody StatusRequest request);
+    
+    @DeleteMapping("/{id}")              // DELETE /api/bookings/{id}
+    public ResponseEntity<Void> cancelBooking(@PathVariable Long id);
+}
+```
+
+**2. Response Standardization:**
+
+```java
+// Consistent API response format
+public class ApiResponse<T> {
+    private boolean success;
+    private String message;
+    private T data;
+    private LocalDateTime timestamp;
+    private List<String> errors;
+    
+    public static <T> ApiResponse<T> success(T data) {
+        return ApiResponse.<T>builder()
+                .success(true)
+                .data(data)
+                .timestamp(LocalDateTime.now())
+                .build();
+    }
+    
+    public static <T> ApiResponse<T> error(String message, List<String> errors) {
+        return ApiResponse.<T>builder()
+                .success(false)
+                .message(message)
+                .errors(errors)
+                .timestamp(LocalDateTime.now())
+                .build();
+    }
+}
+```
+
+#### 4.5.5. Frontend Architecture Analysis
+
+**1. Component Structure:**
+
+```typescript
+// React Component với TypeScript
+interface TripSearchProps {
+  onSearch: (criteria: SearchCriteria) => void;
+  loading: boolean;
+}
+
+const TripSearch: React.FC<TripSearchProps> = ({ onSearch, loading }) => {
+  const [formData, setFormData] = useState<SearchCriteria>({
+    departure: '',
+    destination: '',
+    departureDate: '',
+    coachType: ''
+  });
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    onSearch(formData);
+  };
+
+  return (
+    <form onSubmit={handleSubmit} className="space-y-4">
+      {/* Form fields với Tailwind CSS */}
+    </form>
+  );
+};
+```
+
+**2. State Management với Context API:**
+
+```typescript
+// AuthContext cho quản lý authentication state
+interface AuthContextType {
+  user: User | null;
+  token: string | null;
+  login: (email: string, password: string) => Promise<void>;
+  logout: () => void;
+  loading: boolean;
+}
+
+export const AuthContext = createContext<AuthContextType | undefined>(undefined);
+
+export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const [user, setUser] = useState<User | null>(null);
+  const [token, setToken] = useState<string | null>(localStorage.getItem('token'));
+  const [loading, setLoading] = useState(false);
+
+  const login = async (email: string, password: string) => {
+    setLoading(true);
+    try {
+      const response = await api.post('/auth/login', { email, password });
+      const { token, user } = response.data;
+      
+      setToken(token);
+      setUser(user);
+      localStorage.setItem('token', token);
+      localStorage.setItem('user', JSON.stringify(user));
+    } catch (error) {
+      throw error;
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const logout = () => {
+    setToken(null);
+    setUser(null);
+    localStorage.removeItem('token');
+    localStorage.removeItem('user');
+  };
+
+  return (
+    <AuthContext.Provider value={{ user, token, login, logout, loading }}>
+      {children}
+    </AuthContext.Provider>
+  );
+};
+```
+
+### 4.6. Kết nối giữa Design → Code
+
+#### 4.6.1. Mapping từ Use Case đến Code
 | Use Case | Controller | Service | Repository |
 |----------|------------|---------|------------|
 | UC-01: Đăng ký | AuthController.register() | AuthService.register() | UserRepository |
@@ -981,9 +1756,10 @@ public class AdminService {
 | UC-04: Đặt vé | BookingController.createBooking() | BookingService.createBooking() | BookingRepository, SeatRepository |
 | UC-05: Thanh toán | BookingController.processPayment() | BookingService.processPayment() | BookingRepository |
 | UC-06: Xem vé | BookingController.getMyBookings() | BookingService.getUserBookings() | BookingRepository |
+
 | UC-07: Hủy vé | BookingController.cancelBooking() | BookingService.cancelBooking() | BookingRepository, SeatRepository |
 
-#### 4.4.2. Mapping từ Class Diagram đến Entity
+#### 4.6.2. Mapping từ Class Diagram đến Entity
 
 | Domain Class | Entity Class | Table Name |
 |--------------|--------------|------------|
@@ -994,7 +1770,7 @@ public class AdminService {
 | Seat | Seat.java | seats |
 | Booking | Booking.java | bookings |
 
-#### 4.4.3. Mapping từ NFR đến Implementation
+#### 4.6.3. Mapping từ NFR đến Implementation
 
 | NFR | Implementation |
 |-----|----------------|
